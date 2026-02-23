@@ -1,560 +1,370 @@
-import customtkinter as ctk
-import threading
-import speech_recognition as sr
-import pyttsx3
-import os
-import time
-import pyautogui
-import subprocess
-import sqlite3 
-import psutil 
-import re
-from PIL import Image, ImageGrab
-from tkinter import filedialog
-from transformers import pipeline
-from selenium import webdriver
-from selenium.webdriver.firefox.options import Options
-from selenium.webdriver.common.by import By
-import yt_dlp
-import whisper
-
-try:
-    from pynput import mouse, keyboard
-except ImportError:
-    pass
-
-# --- Configuration & Theme ---
-ctk.set_appearance_mode("dark")
-MAIN_BG = "#0A0A0F"       
-NEON_CYAN = "#00E5FF"     
-NEON_PURPLE = "#B026FF"   
-TEXT_COLOR = "#E0E0E0"
-ACCENT_RED = "#FF003C"
-
-root = ctk.CTk()
-root.title("NexaCore AI - Autonomous RPA Agent")
-root.geometry("1280x850")
-root.configure(fg_color=MAIN_BG)
-
-if os.path.exists("nexacore_icon.ico"):
-    root.iconbitmap("nexacore_icon.ico")
-
-# ==========================================
-# 📁 MASTER DATA & DATABASE ROUTING 
-# ==========================================
-MASTER_DIR = r"D:\NexaCore"
-if not os.path.exists(MASTER_DIR): os.makedirs(MASTER_DIR)
-
-USER_NAME_FILE = os.path.join(MASTER_DIR, "user_name.txt")
-CHAT_HISTORY_FILE = os.path.join(MASTER_DIR, "chat_history.txt")
-LEARNING_DIR = os.path.join(MASTER_DIR, "Learning_Logs")
-RESEARCH_DIR = os.path.join(MASTER_DIR, "Research")
-DB_PATH = os.path.join(MASTER_DIR, "nexacore_memory.db") 
-
-user_name = "Master Ammar"
-system_control_enabled = True 
-local_ai_engine = None
-whisper_engine = None 
-
-is_observing = False
-mouse_listener = None
-keyboard_listener = None
-observation_log = []
-current_learning_task = "default_workflow"
-
-if os.path.exists(USER_NAME_FILE):
-    with open(USER_NAME_FILE, "r", encoding="utf-8") as f:
-        user_name = f.read().strip()
-
-# ==========================================
-# 🧠 DATABASE ARCHITECTURE (MEMORY & LEARNING)
-# ==========================================
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    # Table 1: Knowledge / Research
-    c.execute('''CREATE TABLE IF NOT EXISTS research_memory 
-                 (topic TEXT PRIMARY KEY, summary TEXT, raw_data TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Ammar Ahmed - Ecommerce Specialist</title>
     
-    # NEW Table 2: The "Learning" Folder for Automation
-    c.execute('''CREATE TABLE IF NOT EXISTS learning_logs 
-                 (task_name TEXT PRIMARY KEY, workflow_data TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
-    conn.commit()
-    conn.close()
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
-init_db()
+    <style>
+        /* --- VARIABLES & RESET --- */
+        :root {
+            --primary: #14a800; /* Upwork Green */
+            --accent: #ff9800;  /* Orange Highlight */
+            --dark-bg: #0f0f0f;
+            --card-bg: #1a1a1a;
+            --text-main: #ffffff;
+            --text-muted: #a0a0a0;
+            --border: #2a2a2a;
+            --sidebar-w: 300px;
+        }
 
-def save_research_to_db(topic, summary, raw_data):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("REPLACE INTO research_memory (topic, summary, raw_data) VALUES (?, ?, ?)", (topic, summary, raw_data))
-    conn.commit()
-    conn.close()
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'Poppins', sans-serif;
+            background-color: var(--dark-bg);
+            color: var(--text-main);
+            overflow-x: hidden;
+            scroll-behavior: smooth;
+        }
 
-def check_research_in_db(topic):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT summary, raw_data FROM research_memory WHERE topic=?", (topic,))
-    result = c.fetchone()
-    conn.close()
-    return result
+        a { text-decoration: none; transition: 0.3s; }
+        ul { list-style: none; }
 
-def save_learning_to_db(task_name, workflow_data):
-    """Saves observed actions into the 'learning' database for future automation."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("REPLACE INTO learning_logs (task_name, workflow_data) VALUES (?, ?)", (task_name, workflow_data))
-    conn.commit()
-    conn.close()
+        /* --- LAYOUT --- */
+        .page-wrapper {
+            display: flex;
+            min-height: 100vh;
+        }
 
-def get_learned_task_from_db(task_name):
-    """Retrieves observed actions from the 'learning' database."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT workflow_data FROM learning_logs WHERE task_name=?", (task_name,))
-    result = c.fetchone()
-    conn.close()
-    return result[0] if result else None
+        /* --- SIDEBAR --- */
+        .sidebar {
+            width: var(--sidebar-w);
+            background: var(--card-bg);
+            border-right: 1px solid var(--border);
+            position: fixed;
+            top: 0;
+            left: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            z-index: 100;
+            padding: 40px 30px;
+            text-align: center;
+            overflow-y: auto;
+        }
 
-def check_ram_limit():
-    memory_info = psutil.virtual_memory()
-    percent_used = memory_info.percent
-    if percent_used >= 93.0: # Updated to 93% to prevent premature blocking
-        return False, percent_used
-    return True, percent_used
+        /* SQUARE & ENLARGED PROFILE IMAGE */
+        .profile-img {
+            width: 220px;
+            height: 220px;
+            background: url('profile.jpeg') center top / cover no-repeat;
+            border-radius: 15px; /* Square shape with soft corners */
+            margin: 0 auto 20px;
+            border: 4px solid var(--border);
+            position: relative;
+            animation: floatImage 4s ease-in-out infinite;
+        }
 
-AVAILABLE_COMMANDS = {
-    "📺 Learn Video": "learn video ",
-    "🔍 Web Research": "research on ",
-    "🤖 Automate Task": "automate ",
-    "📂 Open Notepad": "open notepad",
-    "🧠 Analyze Learning": "analyze learning"
-}
+        @keyframes floatImage {
+            0% { transform: translateY(0px); box-shadow: 0 0 15px rgba(20, 168, 0, 0.2); border-color: var(--border); }
+            50% { transform: translateY(-8px); box-shadow: 0 10px 25px rgba(20, 168, 0, 0.4); border-color: var(--primary); }
+            100% { transform: translateY(0px); box-shadow: 0 0 15px rgba(20, 168, 0, 0.2); border-color: var(--border); }
+        }
 
-# --- 100% OFFLINE LOCAL AI SETUP ---
-def load_local_model():
-    global local_ai_engine, whisper_engine
-    try:
-        chat_box.insert("end", "\n[System]: Loading TinyLlama AI & Whisper Audio Engine...\n")
-        chat_box.see("end")
-        local_ai_engine = pipeline("text-generation", model="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
-        whisper_engine = whisper.load_model("base")
-        chat_box.insert("end", "\n[System]: All Local AI Models Successfully Loaded!\n")
-        chat_box.see("end")
-    except Exception as e:
-        print(f"\n[CRITICAL AI LOAD ERROR]: {e}\n") 
-        chat_box.insert("end", f"\n[System Error]: Failed to load AI models. Please check VS Code Terminal. Error: {e}\n")
-        chat_box.see("end")
+        .profile-img::after {
+            content: ''; position: absolute; bottom: 10px; right: -5px; width: 20px; height: 20px;
+            background: var(--primary); border: 3px solid var(--card-bg); border-radius: 50%;
+        }
 
-def save_history(text):
-    try:
-        with open(CHAT_HISTORY_FILE, "a", encoding="utf-8") as f: f.write(text + "\n")
-    except: pass
+        .sidebar h2 { font-size: 24px; font-weight: 700; color: var(--text-main); }
+        .sidebar span { color: var(--primary); font-size: 14px; font-weight: 500; display: block; margin-bottom: 20px; }
 
-def speak_text(text):
-    def run_speech():
-        try:
-            import pythoncom; pythoncom.CoInitialize()
-        except: pass
-        engine = pyttsx3.init()
-        engine.setProperty('rate', 155)
-        engine.say(text)
-        engine.runAndWait()
-    threading.Thread(target=run_speech, daemon=True).start()
+        .social-icons a { color: var(--text-muted); font-size: 18px; margin: 0 8px; }
+        .social-icons a:hover { color: var(--primary); transform: scale(1.1); }
 
-def create_research_file(topic, ai_summary, raw_data):
-    clean_topic = "".join(x for x in topic if x.isalnum() or x in " _-").strip()
-    topic_folder = os.path.join(RESEARCH_DIR, clean_topic.replace(' ', '_'))
-    if not os.path.exists(topic_folder): os.makedirs(topic_folder)
-    filename = os.path.join(topic_folder, "Comprehensive_Report.txt")
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write("="*70 + "\n")
-        f.write(f"  PROFESSIONAL REPORT: {topic.upper()}\n")
-        f.write(f"  DATE: {time.ctime()}\n")
-        f.write("="*70 + "\n\n1. EXECUTIVE SUMMARY\n" + "-"*70 + f"\n{ai_summary}\n\n")
-        f.write("2. FULL RAW DATA / TRANSCRIPTION\n" + "-"*70 + f"\n{raw_data}\n")
-    return filename
+        .nav-menu { margin-top: 30px; width: 100%; text-align: left; padding: 0; }
+        .nav-menu li { margin-bottom: 15px; }
+        .nav-menu a { color: var(--text-muted); font-size: 15px; font-weight: 500; display: flex; align-items: center; }
+        .nav-menu a i { margin-right: 15px; width: 20px; text-align: center; }
+        .nav-menu a:hover, .nav-menu a.active { color: var(--text-main); }
 
-# ==========================================
-# 👁️ ROBOTIC PROCESS AUTOMATION (RPA) OBSERVER
-# ==========================================
-def on_click(x, y, button, pressed):
-    if pressed:
-        # Save exact coordinates in an easily parsable format
-        observation_log.append(f"CLICK|{int(x)}|{int(y)}")
+        /* BUTTONS IN SIDEBAR */
+        .sidebar-buttons { margin-top: auto; width: 100%; padding-top: 30px; }
 
-def on_press(key):
-    try:
-        observation_log.append(f"TYPE|{key.char}")
-    except AttributeError:
-        if key == keyboard.Key.space: observation_log.append("TYPE| ")
-        elif key == keyboard.Key.enter: observation_log.append("KEY|enter")
-        elif key == keyboard.Key.backspace: observation_log.append("KEY|backspace")
+        .btn-hire {
+            background: var(--primary); color: white; padding: 12px 0; border-radius: 30px; font-weight: 600;
+            display: block; box-shadow: 0 4px 15px rgba(20, 168, 0, 0.3); margin-bottom: 15px;
+        }
+        .btn-hire:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(20, 168, 0, 0.4); }
 
-def toggle_observation():
-    global is_observing, mouse_listener, keyboard_listener, observation_log, current_learning_task
-    
-    if not is_observing:
-        # Prompt user to name the task they are about to teach the AI
-        dialog = ctk.CTkInputDialog(text="What task are you about to perform? (e.g., 'open_browser')", title="Name Automation Task")
-        task_name = dialog.get_input()
-        if not task_name: 
-            chat_box.insert("end", "\n[System]: Observation cancelled. You must name the task.\n")
-            return
+        .btn-email {
+            position: relative; background: transparent; color: var(--primary); border: 2px solid var(--primary);
+            padding: 12px 0; border-radius: 30px; font-weight: 700; display: flex; justify-content: center;
+            align-items: center; font-size: 14px; transition: all 0.3s ease-in-out; overflow: hidden;
+            animation: subtlePulse 2s infinite;
+        }
+        .btn-email i { margin-right: 10px; font-size: 16px; transition: 0.3s; }
+        
+        .btn-email:hover {
+            background: var(--primary); color: var(--dark-bg); transform: translateY(-3px);
+            box-shadow: 0 5px 15px rgba(20, 168, 0, 0.4); animation: none;
+        }
+        .btn-email:hover i { transform: translateX(5px) scale(1.1); }
+
+        @keyframes subtlePulse {
+            0% { box-shadow: 0 0 0 0 rgba(20, 168, 0, 0.2); }
+            70% { box-shadow: 0 0 0 10px rgba(20, 168, 0, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(20, 168, 0, 0); }
+        }
+
+        /* --- MAIN CONTENT --- */
+        .main-content { margin-left: var(--sidebar-w); width: calc(100% - var(--sidebar-w)); position: relative; }
+        section { padding: 80px 60px; border-bottom: 1px solid var(--border); }
+        
+        .section-header { margin-bottom: 50px; }
+        .section-header h2 { font-size: 36px; font-weight: 700; position: relative; display: inline-block; }
+        .section-header h2::after {
+            content: 'E-com'; position: absolute; top: -20px; left: 0; font-size: 60px; opacity: 0.05; text-transform: uppercase; z-index: -1;
+        }
+
+        .split-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 50px; }
+
+        /* --- HERO --- */
+        #home {
+            height: 100vh; display: flex; align-items: center;
+            background: radial-gradient(circle at 80% 50%, rgba(20, 168, 0, 0.05) 0%, rgba(15, 15, 15, 1) 50%);
+        }
+        .hero-text { width: 100%; }
+        .hero-text h1 { font-size: 50px; line-height: 1.2; font-weight: 800; margin-bottom: 20px; }
+        .hero-text .highlight { color: var(--primary); }
+        
+        .typewriter-wrapper { width: fit-content; max-width: 100%; }
+        .typewriter-text {
+            font-size: 20px; color: var(--text-muted); font-family: monospace; border-right: 2px solid var(--primary);
+            white-space: nowrap; overflow: hidden; animation: typing 3.5s steps(40, end), blink-caret .75s step-end infinite;
+        }
+        
+        .stats-row { display: flex; gap: 40px; margin-top: 50px; }
+        .stat-item h3 { font-size: 32px; color: var(--text-main); font-weight: 700; }
+        .stat-item p { font-size: 14px; color: var(--text-muted); }
+
+        /* --- RESUME BOXES --- */
+        .resume-container { display: flex; flex-direction: column; gap: 20px; }
+        .resume-box {
+            background: var(--card-bg); padding: 25px; border-radius: 12px; 
+            border-left: 4px solid var(--border); transition: 0.3s; cursor: pointer; position: relative;
+        }
+        .resume-box:hover { border-left-color: var(--primary); transform: translateX(5px); background: #202020; }
+        .resume-date { background: #252525; color: var(--text-muted); padding: 4px 10px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 8px; }
+        .resume-box h3 { font-size: 18px; margin-bottom: 5px; color: #fff; }
+        .resume-box .place { color: var(--primary); font-size: 13px; margin-bottom: 8px; display: block; font-weight: 600; }
+        .resume-box p { font-size: 12px; color: #999; line-height: 1.6; margin-bottom: 0; }
+        .view-more-btn { font-size: 11px; color: var(--primary); text-transform: uppercase; font-weight: 600; margin-top: 10px; display: block; }
+
+        /* --- SERVICES GRID --- */
+        .services-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 30px; }
+        .service-card {
+            background: var(--card-bg); padding: 40px 30px; border-radius: 15px; text-align: center; border: 1px solid var(--border); transition: 0.3s; cursor: pointer; position: relative;
+        }
+        .service-card:hover { border-color: var(--primary); transform: translateY(-10px); background: #202020; }
+        .service-card i { font-size: 40px; color: var(--primary); margin-bottom: 25px; }
+        .service-card h3 { margin-bottom: 15px; font-size: 20px; }
+        .service-card p { color: var(--text-muted); font-size: 14px; line-height: 1.6; }
+
+        /* --- PORTFOLIO --- */
+        .portfolio-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 30px; }
+        .portfolio-item { position: relative; border-radius: 10px; overflow: hidden; height: 250px; cursor: pointer; }
+        .portfolio-img { width: 100%; height: 100%; object-fit: cover; transition: 0.5s; }
+        .portfolio-overlay {
+            position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8);
+            display: flex; flex-direction: column; justify-content: center; align-items: center; opacity: 0; transition: 0.3s;
+        }
+        .portfolio-item:hover .portfolio-overlay { opacity: 1; }
+        .portfolio-item:hover .portfolio-img { transform: scale(1.1); }
+        .badge { background: var(--accent); color: #000; padding: 5px 10px; font-size: 12px; border-radius: 4px; font-weight: 700; margin-bottom: 10px; }
+
+        /* --- CONTACT --- */
+        .contact-form input, .contact-form textarea {
+            width: 100%; background: var(--card-bg); border: 1px solid var(--border); padding: 15px; color: var(--text-main);
+            border-radius: 8px; margin-bottom: 20px; font-family: inherit;
+        }
+        .contact-form button {
+            background: var(--text-main); color: var(--dark-bg); padding: 15px 35px; border: none; border-radius: 30px;
+            font-weight: 700; cursor: pointer; transition: 0.3s; width: 100%;
+        }
+        .contact-form button:hover { background: var(--primary); color: #fff; }
+
+        /* --- MODALS (POPUPS) --- */
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85); z-index: 999; display: none;
+            justify-content: center; align-items: center; backdrop-filter: blur(5px);
+            padding: 20px;
+        }
+        .modal-content {
+            background: #1a1a1a; width: 650px; max-width: 100%; padding: 40px; border-radius: 15px;
+            border: 1px solid var(--primary); position: relative; animation: popUp 0.3s ease-out;
+            max-height: 85vh; overflow-y: auto;
+        }
+        @keyframes popUp { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+        
+        .close-btn { position: absolute; top: 15px; right: 20px; font-size: 25px; color: #fff; cursor: pointer; }
+        .modal-title { font-size: 24px; color: var(--primary); margin-bottom: 20px; border-bottom: 1px solid #333; padding-bottom: 10px; }
+        .modal-body p { color: #ccc; margin-bottom: 15px; line-height: 1.6; font-size: 14px; }
+        .modal-body ul { margin-left: 20px; color: #aaa; margin-bottom: 20px; font-size: 14px; }
+        .modal-body li { margin-bottom: 8px; }
+        .modal-subtitle { color: var(--accent); font-size: 16px; font-weight: 600; margin-top: 20px; margin-bottom: 10px; display: block; }
+
+        /* =========================================================================
+           ULTIMATE RESPONSIVE FIXES (TABLET & MOBILE) 
+           ========================================================================= */
+
+        /* Tablets (iPad Pro & Standard Tablets) */
+        @media (max-width: 1080px) {
+            .page-wrapper { flex-direction: column; }
             
-        current_learning_task = task_name.strip().replace(" ", "_")
-        is_observing = True
-        observation_log = [] # Reset log
-        
-        btn_observe.configure(text="  🛑  STOP OBSERVE", border_color=ACCENT_RED, text_color=ACCENT_RED)
-        chat_box.insert("end", f"\n[System]: Recording actions for '{current_learning_task}'...\n")
-        chat_box.see("end")
-        
-        mouse_listener = mouse.Listener(on_click=on_click)
-        keyboard_listener = keyboard.Listener(on_press=on_press)
-        mouse_listener.start()
-        keyboard_listener.start()
-    else:
-        is_observing = False
-        btn_observe.configure(text="  👁️  SCREEN OBSERVE", border_color="#333", text_color="white")
-        
-        if mouse_listener: mouse_listener.stop()
-        if keyboard_listener: keyboard_listener.stop()
-        
-        # Save exact workflow string to the local database 'learning' table
-        workflow_str = "\n".join(observation_log)
-        save_learning_to_db(current_learning_task, workflow_str)
-        
-        # Save backup text file
-        if not os.path.exists(LEARNING_DIR): os.makedirs(LEARNING_DIR)
-        file_path = os.path.join(LEARNING_DIR, f"{current_learning_task}.txt")
-        with open(file_path, "w", encoding="utf-8") as f: f.write(workflow_str)
-        
-        chat_box.insert("end", f"\n[System]: Task '{current_learning_task}' saved to memory database. Type 'automate {current_learning_task}' to run it.\n")
-        chat_box.see("end")
-
-def execute_automation(task_name):
-    """Pulls data from the database and physically replicates the user's actions."""
-    workflow = get_learned_task_from_db(task_name)
-    if not workflow:
-        return f"I do not have data for the task '{task_name}'. Please teach me using Screen Observe first."
-        
-    chat_box.insert("end", f"\n[RPA Agent]: Taking over controls to perform '{task_name}' in 3 seconds...\n")
-    speak_text("Automating task in 3 seconds. Do not touch the mouse.")
-    root.update()
-    time.sleep(3)
-    
-    actions = workflow.split('\n')
-    for action in actions:
-        if action.startswith("CLICK|"):
-            parts = action.split("|")
-            x, y = int(parts[1]), int(parts[2])
-            pyautogui.click(x=x, y=y)
-            time.sleep(0.5) # Natural delay
-        elif action.startswith("TYPE|"):
-            char = action.split("|")[1]
-            pyautogui.write(char, interval=0.05)
-        elif action.startswith("KEY|"):
-            key_name = action.split("|")[1]
-            pyautogui.press(key_name)
-            time.sleep(0.2)
+            .sidebar {
+                width: 100%;
+                height: auto;
+                position: relative;
+                border-right: none;
+                border-bottom: 1px solid var(--border);
+                padding: 40px 20px;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                text-align: center;
+            }
             
-    return f"Automation for '{task_name}' completed successfully."
+            .main-content {
+                margin-left: 0;
+                width: 100%;
+            }
 
-# ==========================================
-# 🌐 WEB AGENTS & SYSTEM EXECUTION
-# ==========================================
-def process_video_learning(url):
-    temp_audio_path = os.path.join(MASTER_DIR, "temp_video_audio.mp3")
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': os.path.join(MASTER_DIR, 'temp_video_audio.%(ext)s'),
-        'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3','preferredquality': '128'}],
-        'quiet': True
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl: ydl.download([url])
-        result = whisper_engine.transcribe(temp_audio_path)
-        transcript = result["text"].strip()
-        if os.path.exists(temp_audio_path): os.remove(temp_audio_path)
-        return transcript
-    except Exception as e:
-        if os.path.exists(temp_audio_path): os.remove(temp_audio_path)
-        return None
-
-def multi_site_research_agent(topic):
-    options = Options()
-    options.add_argument('-private')   
-    try:
-        driver = webdriver.Firefox(options=options)
-        driver.get(f"https://html.duckduckgo.com/html/?q={topic.replace(' ', '+')}")
-        time.sleep(3) 
-        
-        links = driver.find_elements(By.CSS_SELECTOR, 'a.result__url')
-        urls_to_visit = []
-        is_course = "course" in topic.lower() or "learn" in topic.lower()
-        blocked = ['youtube.com', 'vimeo.com', 'tiktok.com', 'instagram.com', 'facebook.com']
-        course_sites = ['udemy.com', 'coursera.org', 'edx.org', 'skillshare.com']
-        
-        for link in links:
-            href = link.get_attribute('href')
-            if not href: continue
-            href_lower = href.lower()
-            if is_course and any(domain in href_lower for domain in blocked): continue
-            elif not is_course and any(domain in href_lower for domain in blocked + course_sites): continue
-            if href not in urls_to_visit: urls_to_visit.append(href)
-            if len(urls_to_visit) >= 5: break
-                
-        if not urls_to_visit:
-            driver.quit()
-            return None
+            .split-grid { grid-template-columns: 1fr; gap: 40px; }
             
-        combined_scraped_data = ""
-        for i, url in enumerate(urls_to_visit, 1):
-            try:
-                driver.get(url)
-                time.sleep(2) 
-                paragraphs = driver.find_elements(By.TAG_NAME, 'p')
-                site_text = f"\n>>> SOURCE {i}: {url} <<<\n"
-                char_count = 0
-                for p in paragraphs:
-                    text = p.text.strip()
-                    if text: 
-                        site_text += text + "\n\n"
-                        char_count += len(text)
-                    if char_count > 1200: break
-                combined_scraped_data += site_text
-            except: pass
-        driver.quit() 
-        return combined_scraped_data if combined_scraped_data.strip() else None
-    except:
-        try: driver.quit() 
-        except: pass
-        return None
+            .nav-menu { text-align: center; }
+            .nav-menu ul {
+                display: flex;
+                flex-wrap: wrap;
+                justify-content: center;
+                gap: 15px;
+            }
+            .nav-menu li { margin-bottom: 0; }
+            .nav-menu a { flex-direction: column; padding: 10px; }
+            .nav-menu a i { margin-right: 0; margin-bottom: 5px; font-size: 18px; }
 
-def execute_system_command(command):
-    cmd = command.lower().strip()
-    if cmd.startswith("open notepad"):
-        subprocess.Popen("notepad.exe")
-        return "Notepad opened successfully."
-    elif cmd.startswith("open calculator") or cmd == "calc":
-        subprocess.Popen("calc.exe")
-        return "Calculator opened successfully."
-    return None
+            .sidebar-buttons { max-width: 400px; margin: 20px auto 0; }
+        }
 
-# ==========================================
-# 🧠 CORE AI LOGIC
-# ==========================================
-def get_ai_response(user_text, reply_with_voice=True):
-    msg = f"\n{user_name}: {user_text}\n"
-    chat_box.insert("end", msg)
-    chat_box.see("end")
-    save_history(msg)
-    
-    is_safe, current_ram = check_ram_limit()
-    if not is_safe:
-        warning_msg = f"WARNING: System RAM is at {current_ram}%. Task blocked to prevent crashing."
-        chat_box.insert("end", f"\n[System Guardian]: {warning_msg}\n")
-        speak_text("Memory limit reached.")
-        record_btn.configure(text="🎤 VOICE COMMAND", border_color=NEON_CYAN)
-        return
-    
-    if system_control_enabled:
-        sys_reply = execute_system_command(user_text)
-        if sys_reply is not None:
-            chat_box.insert("end", f"\n[System Execution]: {sys_reply}\n")
-            save_history(f"[System Execution]: {sys_reply}")
-            if reply_with_voice: speak_text(sys_reply)
-            record_btn.configure(text="🎤 VOICE COMMAND", border_color=NEON_CYAN)
-            return
-
-    cmd_lower = user_text.lower().strip()
-
-    # --- NEW: DATABASE AUTOMATION LOGIC ---
-    if cmd_lower.startswith("automate "):
-        task_name = cmd_lower.replace("automate ", "").replace(" ", "_")
-        result_msg = execute_automation(task_name)
-        chat_box.insert("end", f"\nNexaCore: {result_msg}\n" + "━"*40 + "\n")
-        if reply_with_voice: speak_text("Automation finished.")
-        record_btn.configure(text="🎤 VOICE COMMAND", border_color=NEON_CYAN)
-        return
-
-    if cmd_lower.startswith("learn video"):
-        url = user_text.replace("learn video", "", 1).strip()
-        chat_box.insert("end", f"\n[Video Agent]: Transcribing {url}...\n")
-        chat_box.see("end")
-        full_transcript = process_video_learning(url)
-        if not full_transcript:
-            fallback_msg = "I cannot do this task because I do not have enough data."
-            chat_box.insert("end", f"\nNexaCore: {fallback_msg}\n")
-            if reply_with_voice: speak_text(fallback_msg)
-            record_btn.configure(text="🎤 VOICE COMMAND", border_color=NEON_CYAN)
-            return
-        topic = f"Video_Learning_{int(time.time())}"
-        ai_prompt = f"<|system|>\nYou are a smart assistant.\n<|user|>\nBased on this transcript, write a short summary:\n\n{full_transcript[:1500]}\n<|assistant|>\n"
-        user_text, scraped_data = ai_prompt, full_transcript
-
-    elif cmd_lower.startswith("research on") or cmd_lower.startswith("new research on"):
-        topic = cmd_lower.replace("new research on", "").replace("research on", "").strip()
-        if not cmd_lower.startswith("new research"):
-            db_result = check_research_in_db(topic)
-            if db_result:
-                cached_summary, cached_raw_data = db_result
-                saved_path = create_research_file(topic, cached_summary, cached_raw_data)
-                final_output = f"Retrieved from database memory. Report at:\n{saved_path}"
-                chat_box.insert("end", f"\nNexaCore: {final_output}\n" + "━"*40 + "\n")
-                if reply_with_voice: speak_text("Data retrieved from memory.")
-                record_btn.configure(text="🎤 VOICE COMMAND", border_color=NEON_CYAN)
-                return
-        
-        chat_box.insert("end", f"\n[Web Agent]: Scraping fresh data for '{topic}'...\n")
-        chat_box.see("end")
-        scraped_data = multi_site_research_agent(topic)
-        
-        if not scraped_data:
-            fallback_msg = "I cannot do this task because I do not have enough data."
-            chat_box.insert("end", f"\nNexaCore: {fallback_msg}\n" + "━"*40 + "\n")
-            if reply_with_voice: speak_text(fallback_msg)
-            record_btn.configure(text="🎤 VOICE COMMAND", border_color=NEON_CYAN)
-            return
-        ai_prompt = f"<|system|>\nYou are a smart assistant.\n<|user|>\nBased on this text, write a short summary about {topic}:\n\n{scraped_data[:1500]}\n<|assistant|>\n"
-        user_text = ai_prompt
-
-    if local_ai_engine is None or whisper_engine is None:
-        chat_box.insert("end", "\n[System]: Please wait, local AI is still initializing...\n")
-    else:
-        try:
-            response = local_ai_engine(user_text, max_new_tokens=250, do_sample=True, temperature=0.7)
-            raw_reply = response[0]['generated_text']
-            ai_reply = raw_reply.split("<|assistant|>\n")[1].strip() if "<|assistant|>\n" in raw_reply else raw_reply.replace(user_text, "").strip()
+        /* Mobile Phones */
+        @media (max-width: 768px) {
+            section { padding: 50px 20px; }
+            #home { height: auto; padding: 100px 20px 50px; text-align: center; }
             
-            if not ai_reply or len(ai_reply) < 5:
-                fallback_msg = "I cannot do this task because I do not have enough data."
-                chat_box.insert("end", f"\nNexaCore: {fallback_msg}\n" + "━"*40 + "\n")
-            else:
-                if "<|system|>" in user_text:
-                    saved_path = create_research_file(topic, ai_reply, scraped_data)
-                    save_research_to_db(topic, ai_reply, scraped_data)
-                    final_output = f"Task complete. Data learned and saved to database here:\n{saved_path}"
-                else:
-                    final_output = ai_reply
+            .hero-text h1 { font-size: 38px; }
+            
+            /* Typewriter fix to prevent horizontal scroll on small phones */
+            .typewriter-text {
+                white-space: normal;
+                border-right: none;
+                animation: none;
+                width: 100% !important;
+                font-size: 16px;
+                margin: 0 auto;
+            }
+            .typewriter-wrapper { width: 100%; text-align: center; }
+            
+            .stats-row { justify-content: center; flex-wrap: wrap; gap: 20px; }
+            .stat-item { padding: 10px; }
 
-                chat_box.insert("end", f"\nNexaCore: {final_output}\n" + "━"*40 + "\n")
-                if reply_with_voice: speak_text("Task successfully completed.")
-        except Exception as e:
-            chat_box.insert("end", f"\nNexaCore: I cannot do this task because I do not have enough data.\n")
+            .services-grid, .portfolio-grid { grid-template-columns: 1fr; }
+            
+            .modal-content { padding: 30px 20px; }
+            .modal-title { font-size: 20px; }
+            
+            .profile-img { width: 180px; height: 180px; }
+        }
+        
+        @keyframes typing { from { width: 0 } to { width: 100% } }
+        @keyframes blink-caret { from, to { border-color: transparent } 50% { border-color: var(--primary); } }
 
-    record_btn.configure(text="🎤 VOICE COMMAND", border_color=NEON_CYAN)
-    chat_box.see("end")
+    </style>
+</head>
+<body>
 
-def process_voice():
-    record_btn.configure(text="LISTENING...", border_color=ACCENT_RED)
-    r = sr.Recognizer()
-    with sr.Microphone() as source:
-        r.adjust_for_ambient_noise(source)
-        try:
-            audio = r.listen(source, timeout=5)
-            text = r.recognize_google(audio, language="ur-PK")
-            get_ai_response(text, True)
-        except:
-            record_btn.configure(text="🎤 VOICE COMMAND", border_color=NEON_CYAN)
+    <div class="page-wrapper">
+        
+        <aside class="sidebar">
+            <div class="profile-img"></div>
+            <h2>Ammar Ahmed</h2>
+            <span>Ecommerce Specialist</span>
+            
+            <div class="social-icons">
+                <a href="https://www.linkedin.com/in/ammar-ahmed-523676192/" target="_blank"><i class="fab fa-linkedin"></i></a>
+                <a href="#"><i class="fab fa-github"></i></a>
+                <a href="https://www.upwork.com/freelancers/~01e653b49983798773?viewMode=1" target="_blank"><i class="fa-brands fa-upwork"></i></a>
+            </div>
 
-def voice_input_btn(): threading.Thread(target=process_voice).start()
-def send_message_text(event=None):
-    text = entry_box.get()
-    if text:
-        entry_box.delete(0, "end")
-        threading.Thread(target=get_ai_response, args=(text, True)).start()
+            <ul class="nav-menu">
+                <li><a href="#home" class="active"><i class="fas fa-home"></i> Home</a></li>
+                <li><a href="#about"><i class="fas fa-user"></i> About</a></li>
+                <li><a href="#services"><i class="fas fa-briefcase"></i> Services</a></li>
+                <li><a href="#portfolio"><i class="fas fa-layer-group"></i> Portfolio</a></li>
+                <li><a href="#contact"><i class="fas fa-envelope"></i> Contact</a></li>
+            </ul>
 
-def open_settings():
-    win = ctk.CTkToplevel(root)
-    win.title("NexaCore Control Panel")
-    win.geometry("400x300")
-    win.configure(fg_color=MAIN_BG)
-    win.attributes("-topmost", True)
-    ctk.CTkLabel(win, text="AI SETTINGS", font=("Century Gothic", 20, "bold"), text_color=NEON_CYAN).pack(pady=20)
-    def toggle_system():
-        global system_control_enabled
-        system_control_enabled = sys_switch_var.get()
-        chat_box.insert("end", f"\n[Settings]: App Execution Control is now {'ON' if system_control_enabled else 'OFF'}\n")
-    sys_switch_var = ctk.BooleanVar(value=system_control_enabled)
-    ctk.CTkSwitch(win, text="Allow AI to Control Apps", variable=sys_switch_var, command=toggle_system, progress_color=ACCENT_RED).pack(pady=20)
+            <div class="sidebar-buttons">
+                <a href="https://www.upwork.com/freelancers/~01e653b49983798773?viewMode=1" target="_blank" class="btn-hire">
+                    Hire Me on Upwork
+                </a>
+                <a href="mailto:ammarahmedofficial046@gmail.com" class="btn-email">
+                    <i class="fas fa-paper-plane"></i> Email Me Directly
+                </a>
+            </div>
+        </aside>
 
-def upload_file():
-    file_path = filedialog.askopenfilename(filetypes=[("Text/Code Files", "*.txt *.py *.md")])
-    if file_path:
-        try:
-            with open(file_path, "r", encoding="utf-8") as f: content = f.read()
-            chat_box.insert("end", f"\n[System]: File '{os.path.basename(file_path)}' uploaded.\n")
-            ai_instruction = f"<|system|>\nYou are a smart assistant.\n<|user|>\nRead this file and summarize it:\n\n{content[:1000]}\n<|assistant|>\n"
-            threading.Thread(target=get_ai_response, args=(ai_instruction, False)).start()
-        except Exception as e:
-            chat_box.insert("end", f"\n[System Error]: Could not read file.\n")
+        <main class="main-content">
+            
+            <section id="home">
+                <div class="hero-text">
+                    <p style="color: var(--primary); font-weight: 600; letter-spacing: 2px;">WELCOME TO MY WORLD</p>
+                    <h1>I Build & Scale <br><span class="highlight">E-commerce Businesses</span></h1>
+                    <div class="typewriter-wrapper">
+                        <div class="typewriter-text">Expert in Amazon FBA, Shopify & Dropshipping.</div>
+                    </div>
+                    <div class="stats-row">
+                        <div class="stat-item"><h3>7+</h3><p>Years Experience</p></div>
+                        <div class="stat-item"><h3>100+</h3><p>Projects Done</p></div>
+                        <div class="stat-item"><h3>100%</h3><p>Job Success</p></div>
+                    </div>
+                </div>
+            </section>
 
-# ==========================================
-# UI LAYOUT & WIDGETS
-# ==========================================
-sidebar = ctk.CTkFrame(root, width=250, fg_color="#0F0F14", corner_radius=0)
-sidebar.pack(side="left", fill="y")
-ctk.CTkLabel(sidebar, text="NEXACORE", font=("Impact", 28), text_color="white").pack(pady=(40, 10))
-ctk.CTkLabel(sidebar, text="NATIVE SERVER", font=("Arial", 12), text_color=NEON_CYAN).pack(pady=(0, 40))
-
-btn_style = {"fg_color":"transparent", "border_width":1, "border_color":"#333", "hover_color":"#1A1A24", "height":50, "anchor":"w"}
-
-ctk.CTkButton(sidebar, text="  ⚙️  AI SOFTWARE", command=open_settings, **btn_style).pack(fill="x", padx=10, pady=5)
-ctk.CTkButton(sidebar, text="  📂  UPLOAD FILE", command=upload_file, **btn_style).pack(fill="x", padx=10, pady=5)
-btn_observe = ctk.CTkButton(sidebar, text="  👁️  SCREEN OBSERVE", command=toggle_observation, **btn_style)
-btn_observe.pack(fill="x", padx=10, pady=5)
-
-main_frame = ctk.CTkFrame(root, fg_color="transparent")
-main_frame.pack(side="right", fill="both", expand=True, padx=20, pady=20)
-
-chat_box = ctk.CTkTextbox(main_frame, fg_color="#12121A", text_color=TEXT_COLOR, font=("Consolas", 14), corner_radius=15)
-chat_box.pack(fill="both", expand=True, pady=(0, 10))
-chat_box.insert("end", f"System Online. RAM Guardian Active. Memory DB at {DB_PATH}.\n" + "="*50 + "\n")
-
-options_frame = ctk.CTkFrame(main_frame, fg_color="transparent", height=40)
-options_visible = False
-
-def use_command(cmd_text):
-    entry_box.delete(0, "end")
-    entry_box.insert(0, cmd_text)
-    entry_box.focus()
-    toggle_options() 
-
-for title, cmd_text in AVAILABLE_COMMANDS.items():
-    btn = ctk.CTkButton(options_frame, text=title, width=100, height=35, 
-                        command=lambda c=cmd_text: use_command(c),
-                        fg_color="#1A1A24", border_width=1, border_color=NEON_CYAN, hover_color="#333340")
-    btn.pack(side="left", padx=5)
-
-def toggle_options():
-    global options_visible
-    if options_visible:
-        options_frame.pack_forget()
-        input_frame.pack_forget() 
-        input_frame.pack(fill="x") 
-        options_visible = False
-    else:
-        input_frame.pack_forget()
-        options_frame.pack(fill="x", pady=(0, 10)) 
-        input_frame.pack(fill="x") 
-        options_visible = True
-
-input_frame = ctk.CTkFrame(main_frame, fg_color="transparent", height=60)
-input_frame.pack(fill="x")
-
-record_btn = ctk.CTkButton(input_frame, text="🎤 VOICE", command=voice_input_btn, width=120, height=50, fg_color="transparent", border_width=2, border_color=NEON_CYAN, corner_radius=25)
-record_btn.pack(side="left", padx=(0, 10))
-
-plus_btn = ctk.CTkButton(input_frame, text="➕", command=toggle_options, width=50, height=50, fg_color="#1A1A24", text_color=NEON_CYAN, font=("Arial", 20, "bold"), hover_color="#333340")
-plus_btn.pack(side="left", padx=(0, 10))
-
-entry_box = ctk.CTkEntry(input_frame, placeholder_text="Type command or click '+' for options...", height=50, fg_color="#1A1A24", border_color="#333", text_color="white")
-entry_box.pack(side="left", fill="x", expand=True)
-entry_box.bind("<Return>", send_message_text)
-
-ctk.CTkButton(input_frame, text="➤", command=send_message_text, width=60, height=50, fg_color=NEON_CYAN, text_color="black").pack(side="right", padx=(10, 0))
-
-threading.Thread(target=load_local_model, daemon=True).start()
-root.mainloop()
+            <section id="about">
+                <div class="section-header"><h2>About Me</h2></div>
+                <div class="split-grid">
+                    <div>
+                        <p style="color: var(--text-muted); line-height: 1.8; margin-bottom: 20px;">
+                            I am a <strong>Top Rated Ecommerce Specialist</strong> based in <strong>Islamabad, Pakistan</strong>. 
+                            Currently, I lead digital commerce strategy at <strong>Mahraj Technologies</strong>, utilizing my 7+ years of industry experience.
+                        </p>
+                        <p style="color: var(--text-muted); line-height: 1.8;">
+                            My journey spans from hands-on operational roles in Rawalpindi to strategic leadership in Talagang. I bridge the gap between technical platform health and aggressive digital marketing.
+                        </p>
+                        <ul style="margin-top: 20px; color: #ccc;">
+                            <li><i class="fas fa-map-marker-alt" style="color:var(--primary); width:20px;"></i> Islamabad, Pakistan</li>
+                            <li><i class="fas fa-envelope" style="color:var(--primary); width:20px;"></i> ammarahmedofficial046@gmail.com</li>
+                        </ul>
+                    </div>
+                    
+                    <div class="resume-container">
+                        <div class="resume-box" onclick="openModal('modal-mahraj')">
+                            <span class="resume-date">Oct 2025 - Present</span>
+                            <h3>Ecommerce Specialist</h3>
+                            <span class="place">Mahraj Technologies</span>
+                            <p>Leading end-to-end digital commerce strategy &
