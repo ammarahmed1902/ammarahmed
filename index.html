@@ -57,12 +57,13 @@
             overflow-y: auto;
         }
 
-        /* SQUARE & ENLARGED PROFILE IMAGE */
+        /* CIRCLE PROFILE IMAGE (UPDATED HERE) */
         .profile-img {
             width: 220px;
             height: 220px;
             background: url('profile.jpeg') center top / cover no-repeat;
-            border-radius: 15px; /* Square shape with soft corners */
+            /* Yeh line change ki hai taake gol ho jaye */
+            border-radius: 50%; 
             margin: 0 auto 20px;
             border: 4px solid var(--border);
             position: relative;
@@ -75,8 +76,9 @@
             100% { transform: translateY(0px); box-shadow: 0 0 15px rgba(20, 168, 0, 0.2); border-color: var(--border); }
         }
 
+        /* Green Dot Indicator Position Adjusted for Circle */
         .profile-img::after {
-            content: ''; position: absolute; bottom: 10px; right: -5px; width: 20px; height: 20px;
+            content: ''; position: absolute; bottom: 15px; right: 15px; width: 20px; height: 20px;
             background: var(--primary); border: 3px solid var(--card-bg); border-radius: 50%;
         }
 
